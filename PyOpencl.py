@@ -1,4 +1,4 @@
-###############################################
+##############################################
 ########### Fingerprint Recognition ###########
 ###############################################
 from PIL import Image
@@ -17,7 +17,6 @@ for platform in platforms:
 ctx = cl.Context(devs)
 queue = cl.CommandQueue(ctx)
 mf = cl.mem_flags
-
 ### PyOpenCL kernel
 kernel="""
 //gray to binary kernel
@@ -25,7 +24,7 @@ __kernel void gray_to_binary(const int M, const int N, __global int *a, __global
 	int i = get_global_id(0);
 	int j = get_global_id(1);
 	if (a[i*N+j]<=235)	b[i*N+j]=0;
-	else	b[i*N+j]=1;
+	else	b[i*N+j]=255;
 }
 """
 
@@ -37,6 +36,7 @@ im_gray = Image.fromarray(image)
 plt.subplot(2,1,1)
 plt.title('gray(original) image', fontsize= 30)
 plt.imshow(im_gray, extent=[0,783,0,1132])
+print image
 
 image_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=image)
 binary = np.empty_like(image).astype(np.int32)
@@ -48,8 +48,9 @@ im_after = Image.fromarray(binary)
 plt.subplot(2,1,2)
 plt.title("binary image", fontsize= 30)
 plt.imshow(im_after, extent=[0,783,0,1132])
+print binary
 
 fig.tight_layout()
-plt.savefig('FPRS_pyopencl.jpg', dpi=300)
+plt.savefig('FPRS_pyopencl.jpg', dpi=500)
 
 ######################### minutiae extraction #########################
