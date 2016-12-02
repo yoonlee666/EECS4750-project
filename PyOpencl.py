@@ -61,7 +61,7 @@ __kernel void thinning(__global unsigned int *img, __global unsigned int *y, __g
     unsigned int j = get_global_id(1);
     __local int neighbor[8];
     __local unsigned int t[256];
-    
+
     neighbor[0] = 1-img[i*col+j+1];
     neighbor[1] = 1-img[i*col+j+2];
     neighbor[2] = 1-img[(i+1)*col+j+2];
@@ -70,38 +70,38 @@ __kernel void thinning(__global unsigned int *img, __global unsigned int *y, __g
     neighbor[5] = 1-img[(i+2)*col+j];
     neighbor[6] = 1-img[(i+1)*col+j];
     neighbor[7] = 1-img[i*col+j];
-    
+
     for (int n=0; n<8; n++) {
         if (neighbor[n] <0) neighbor[n] = 0; //Remove this for-loop if the input is a real 1-0 binary image
     }
-    
+
     for (int n=0; n<256; n++) {
         t[n] = table[n];
     }
-    
+
     int low_bit = neighbor[0]+neighbor[1]*2+neighbor[2]*4+neighbor[3]*8;
     int high_bit = neighbor[4]+neighbor[5]*2+neighbor[6]*4+neighbor[7]*8;
-    
+
     int temp = img[(i+1)*col+j+1];
     if (temp == 0) {
         if (t[high_bit*16+low_bit] == 0) {
             temp = 1;
             flag[0] = 1;
         }
-    }   
-    y[i*col+j] = temp;    
+    }
+    y[i*col+j] = temp;
 }
 """
 
 ######################### gray image to binary image ########################
 # print original grayscale image
-fig = plt.figure(figsize=(15,20))
+fig = plt.figure(figsize=(20,30))
 im = Image.open('./1133_784.jpg').convert('L') #converts the image to grayscale
 M = 1133
 N = 784
 image = np.array(im).astype(np.int32)
 image_gray = Image.fromarray(image)
-plt.subplot(2,2,1)
+plt.subplot(3,2,1)
 plt.title('gray(original) image', fontsize= 30)
 plt.imshow(image_gray, extent=[0,N,0,M])
 print image
@@ -112,7 +112,7 @@ def showimage(imagename):
 	binary_show_buf = cl.Buffer(ctx, mf.WRITE_ONLY, binary_show.nbytes)
 	prg.show(queue, image.shape, None, np.int32(M), np.int32(N), binary_buf, binary_show_buf)
 	cl.enqueue_copy(queue, binary_show, binary_show_buf)
-	return binary_show  
+	return binary_show
 # do binary using a global threshold, output image is "binary_global"
 image_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=image)
 binary_global = np.empty_like(image).astype(np.int32)
@@ -123,7 +123,7 @@ cl.enqueue_copy(queue, binary_global, binary_buf)
 # show image
 binary_show = showimage(binary_global)
 im_after = Image.fromarray(binary_show)
-plt.subplot(2,2,3)
+plt.subplot(3,2,3)
 plt.title("binary image using global threshold", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
 print binary_show
@@ -136,18 +136,15 @@ cl.enqueue_copy(queue, binary_Bernsen, binary_buf)
 # show image
 binary_show = showimage(binary_Bernsen)
 im_after = Image.fromarray(binary_show)
-plt.subplot(2,2,4)
+plt.subplot(3,2,4)
 plt.title("binary image with Bersen algorithm", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
 print binary_show
 
-fig.tight_layout()
-plt.savefig('FPRS_pyopencl.jpg', dpi=500)
-
 ######################### Thinning #########################
 # Table mapping
 # First iteration table
-table0 = np.array([[1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0], 
+table0 = np.array([[1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],
                    [1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1],
                    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                    [0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1],
@@ -164,7 +161,7 @@ table0 = np.array([[1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],
                    [0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0],
                    [0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1, 1]], np.uint32)
 # Second iteration table
-table1 = np.array( [[1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0], 
+table1 = np.array( [[1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0],
                    [1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0],
                    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                    [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0],
@@ -205,27 +202,32 @@ while(True):
         k = 1-k;
         flag[0] = 0;
         img_gpu = cl.array.to_device(queue, np.lib.pad(y,1,'constant', constant_values = 1))
-    else: 
+    else:
         break;
- 
-skeleton =  y_gpu.get()
-#print bi_img.shape
-#print bi_img
 
-# Show image
-bi_img_show = showimage(bi_img)
-im_after = Image.fromarray(bi_img_show)
-plt.subplot(1,2,1)
-plt.title("Original", fontsize= 30)
-plt.imshow(im_after, extent=[0,N,0,M])
+skeleton =  y_gpu.get()
 
 skeleton_show = showimage(skeleton)
 im_after = Image.fromarray(skeleton_show)
-plt.subplot(1,2,2)
+plt.subplot(3,2,5)
 plt.title("Skeleton", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
-#print skeleton_show
-
-plt.savefig('Thinning_pyopencl.jpg')
+print skeleton_show
 
 ######################### minutiae extraction #########################
+
+
+
+
+
+
+
+
+
+
+
+
+
+################ show image ###############
+fig.tight_layout()
+plt.savefig('FPRS_pyopencl.jpg', dpi=500)
