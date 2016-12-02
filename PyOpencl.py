@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import time
 import numpy as np
 import pyopencl as cl
+import pyopencl.array
 NAME = 'NVIDIA CUDA'
 platforms = cl.get_platforms()
 devs = None
@@ -53,12 +54,49 @@ __kernel void Bernsen(const int M, const int N, __global int *a, __global int *b
         else    b[i*N+j]=255;
 }
 
+//Kernel for thinning
+__kernel void thinning(__global unsigned int *img, __global unsigned int *y, __global unsigned int *flag,
+                   __global unsigned int *table, const unsigned int col) {
+    unsigned int i = get_global_id(0);
+    unsigned int j = get_global_id(1);
+    __local int neighbor[8];
+    __local unsigned int t[256];
+    
+    neighbor[0] = 1-img[i*col+j+1];
+    neighbor[1] = 1-img[i*col+j+2];
+    neighbor[2] = 1-img[(i+1)*col+j+2];
+    neighbor[3] = 1-img[(i+2)*col+j+2];
+    neighbor[4] = 1-img[(i+2)*col+j+1];
+    neighbor[5] = 1-img[(i+2)*col+j];
+    neighbor[6] = 1-img[(i+1)*col+j];
+    neighbor[7] = 1-img[i*col+j];
+    
+    for (int n=0; n<8; n++) {
+        if (neighbor[n] <0) neighbor[n] = 0; //Remove this for-loop if the input is a real 1-0 binary image
+    }
+    
+    for (int n=0; n<256; n++) {
+        t[n] = table[n];
+    }
+    
+    int low_bit = neighbor[0]+neighbor[1]*2+neighbor[2]*4+neighbor[3]*8;
+    int high_bit = neighbor[4]+neighbor[5]*2+neighbor[6]*4+neighbor[7]*8;
+    
+    int temp = img[(i+1)*col+j+1];
+    if (temp == 0) {
+        if (t[high_bit*16+low_bit] == 0) {
+            temp = 1;
+            flag[0] = 1;
+        }
+    }   
+    y[i*col+j] = temp;    
+}
 """
 
 ######################### gray image to binary image ########################
 # print original grayscale image
 fig = plt.figure(figsize=(15,20))
-im = Image.open('./1133*784.jpg').convert('L') #converts the image to grayscale
+im = Image.open('./1133_784.jpg').convert('L') #converts the image to grayscale
 M = 1133
 N = 784
 image = np.array(im).astype(np.int32)
@@ -105,5 +143,89 @@ print binary_show
 
 fig.tight_layout()
 plt.savefig('FPRS_pyopencl.jpg', dpi=500)
+
+######################### Thinning #########################
+# Table mapping
+# First iteration table
+table0 = np.array([[1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0], 
+                   [1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1],
+                   [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0],
+                   [0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 1, 1]], np.uint32)
+# Second iteration table
+table1 = np.array( [[1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0], 
+                   [1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0],
+                   [1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1],
+                   [1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+                   [0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                   [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1]], np.uint32)
+
+
+bi_img = binary_global # Use the output of global thresholding
+M = len(bi_img)
+N = len(bi_img[0])
+k = 0
+flag = np.array([0]).astype(np.uint32)
+
+image_padding = np.lib.pad(bi_img,1,'constant', constant_values = 1) # Pad the input matrix with ones (white pixels)
+img_gpu = cl.array.to_device(queue, image_padding)
+y_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
+table0_gpu = cl.array.to_device(queue, table0)
+table1_gpu = cl.array.to_device(queue, table1)
+flag_gpu = cl.array.to_device(queue, flag)
+
+while(True):
+    if (k == 0):
+        prg.thinning(queue, bi_img.shape, None, img_gpu.data, y_gpu.data, flag_gpu.data, table0_gpu.data, np.int32(N))
+    else:
+        prg.thinning(queue, bi_img.shape, None, img_gpu.data, y_gpu.data, flag_gpu.data, table1_gpu.data, np.int32(N))
+    y = y_gpu.get()
+    if (flag[0] != 0):
+        k = 1-k;
+        flag[0] = 0;
+        img_gpu = cl.array.to_device(queue, np.lib.pad(y,1,'constant', constant_values = 1))
+    else: 
+        break;
+ 
+skeleton =  y_gpu.get()
+#print bi_img.shape
+#print bi_img
+
+# Show image
+bi_img_show = showimage(bi_img)
+im_after = Image.fromarray(bi_img_show)
+plt.subplot(1,2,1)
+plt.title("Original", fontsize= 30)
+plt.imshow(im_after, extent=[0,N,0,M])
+
+skeleton_show = showimage(skeleton)
+im_after = Image.fromarray(skeleton_show)
+plt.subplot(1,2,2)
+plt.title("Skeleton", fontsize= 30)
+plt.imshow(im_after, extent=[0,N,0,M])
+#print skeleton_show
+
+plt.savefig('Thinning_pyopencl.jpg')
 
 ######################### minutiae extraction #########################
