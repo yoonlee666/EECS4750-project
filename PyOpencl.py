@@ -20,38 +20,41 @@ queue = cl.CommandQueue(ctx)
 mf = cl.mem_flags
 ### PyOpenCL kernel
 kernel="""
-//this kernel is for showing image
+//this kernel is for showing image(converting 0,1 image to 0,255 image)
 __kernel void show(const int M, const int N, __global int *a, __global int *b){
         int i = get_global_id(0);
         int j = get_global_id(1);
         if (a[i*N+j]==0)      b[i*N+j]=0;
         else    b[i*N+j]=255;
 }
-//gray to binary kernel
+//gray to binary kernel using a global threshold
 __kernel void globalthreshold(const int M, const int N, __global int *a, __global int *b){
 	int i = get_global_id(0);
 	int j = get_global_id(1);
 	if (a[i*N+j]<=205)	b[i*N+j]=0;
 	else	b[i*N+j]=1;
 }
+
+//gray to binary kernel using adaptive threshold --- Bernsen algorithm
 __kernel void Bernsen(const int M, const int N, __global int *a, __global int *b){
         int i = get_global_id(0);
         int j = get_global_id(1);
-	__local int bins[9];
-	for(int k=i-1;k<=i+1;k++){
-		for(int l=j-1;l<=j+1;l++){
-			b[(k-i+1)*3+l-j+1]=a[k*N+l];
+	__local int bins[25];
+	for(int k=i-2;k<=i+2;k++){
+		for(int l=j-2;l<=j+2;l++){
+			if((k<0)||(k>=1133)||(l<0)||(l>=784))	bins[(k-i+2)*5+l-j+2]=0;
+			else bins[(k-i+2)*5+l-j+2]=a[k*N+l];
 		}
 	}
-//extract max and min
+//extract max and min(can do it with reduction)
 	int min = 255;
 	int max = 0;
-	for (int k=0;k<9;k++){
+	for (int k=0;k<25;k++){
 		if(bins[k]<min)	    min=bins[k];
 		if(bins[k]>max)     max=bins[k];
 	}
-        if (a[i*N+j]<=(min+max)/2)      b[i*N+j]=0;
-        else    b[i*N+j]=255;
+        if (((a[i*N+j]>=(min+max)/2)&&(max-min>70))||((a[i*N+j]>=205)&&(max-min<=70)))      b[i*N+j]=1;
+        else    b[i*N+j]=0;
 }
 
 //Kernel for thinning
@@ -113,6 +116,7 @@ def showimage(imagename):
 	prg.show(queue, image.shape, None, np.int32(M), np.int32(N), binary_buf, binary_show_buf)
 	cl.enqueue_copy(queue, binary_show, binary_show_buf)
 	return binary_show
+
 # do binary using a global threshold, output image is "binary_global"
 image_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=image)
 binary_global = np.empty_like(image).astype(np.int32)
@@ -127,6 +131,7 @@ plt.subplot(3,2,3)
 plt.title("binary image using global threshold", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
 print binary_show
+
 # do binary using Bernsen algorithm, output image is "binary_Bernsen"
 image_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=image)
 binary_Bernsen = np.empty_like(image).astype(np.int32)
@@ -140,6 +145,8 @@ plt.subplot(3,2,4)
 plt.title("binary image with Bersen algorithm", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
 print binary_show
+
+print np.allclose(binary_global,binary_Bernsen)
 
 ######################### Thinning #########################
 # Table mapping
