@@ -59,12 +59,13 @@ __kernel void Bernsen(const int M, const int N, __global int *a, __global int *b
 
 //Kernel for thinning
 __kernel void thinning(__global unsigned int *img, __global unsigned int *y, __global unsigned int *flag,
-                   __global unsigned int *table, const unsigned int col) {
+                   __global unsigned int *table, const unsigned int C) {
     unsigned int i = get_global_id(0);
     unsigned int j = get_global_id(1);
     __local int neighbor[8];
     __local unsigned int t[256];
-
+    unsigned int col = C+2;
+    
     neighbor[0] = 1-img[i*col+j+1];
     neighbor[1] = 1-img[i*col+j+2];
     neighbor[2] = 1-img[(i+1)*col+j+2];
@@ -73,26 +74,27 @@ __kernel void thinning(__global unsigned int *img, __global unsigned int *y, __g
     neighbor[5] = 1-img[(i+2)*col+j];
     neighbor[6] = 1-img[(i+1)*col+j];
     neighbor[7] = 1-img[i*col+j];
-
+    
     for (int n=0; n<8; n++) {
         if (neighbor[n] <0) neighbor[n] = 0; //Remove this for-loop if the input is a real 1-0 binary image
     }
-
+    
     for (int n=0; n<256; n++) {
         t[n] = table[n];
     }
-
+    
     int low_bit = neighbor[0]+neighbor[1]*2+neighbor[2]*4+neighbor[3]*8;
     int high_bit = neighbor[4]+neighbor[5]*2+neighbor[6]*4+neighbor[7]*8;
-
+    
     int temp = img[(i+1)*col+j+1];
     if (temp == 0) {
         if (t[high_bit*16+low_bit] == 0) {
             temp = 1;
-            flag[0] = 1;
+            flag[i*C+j] = 1;
         }
-    }
-    y[i*col+j] = temp;
+    }   
+    else temp = 1;
+    y[i*C+j] = temp;    
 }
 """
 
@@ -185,19 +187,63 @@ table1 = np.array( [[1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0],
                    [0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                    [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1]], np.uint32)
 
-
-bi_img = binary_global # Use the output of global thresholding
+# Use the output of global thresholding, the corresponding skeleton image is "skeleton_global"
+bi_img = binary_global 
 M = len(bi_img)
 N = len(bi_img[0])
 k = 0
-flag = np.array([0]).astype(np.uint32)
+#flag = np.array([0]).astype(np.uint32)
+#flag = 0
+iteration_global = 1
 
 image_padding = np.lib.pad(bi_img,1,'constant', constant_values = 1) # Pad the input matrix with ones (white pixels)
 img_gpu = cl.array.to_device(queue, image_padding)
 y_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
 table0_gpu = cl.array.to_device(queue, table0)
 table1_gpu = cl.array.to_device(queue, table1)
-flag_gpu = cl.array.to_device(queue, flag)
+flag_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
+
+while(True):
+	if (k == 0):
+		prg.thinning(queue, bi_img.shape, None, img_gpu.data, y_gpu.data, flag_gpu.data, table0_gpu.data, np.int32(N))
+	else:
+		prg.thinning(queue, bi_img.shape, None, img_gpu.data, y_gpu.data, flag_gpu.data, table1_gpu.data, np.int32(N))
+	y = y_gpu.get()
+	flag = flag_gpu.get()
+	if (np.count_nonzero(flag) > 0):
+		k = 1-k
+		flag_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
+		img_gpu = cl.array.to_device(queue, np.lib.pad(y,1,'constant', constant_values = 1))
+	else:
+		break
+	iteration_global += 1
+
+skeleton_global =  y
+print 'iterations(global) =', iteration_global
+
+# show image
+skeleton_show = showimage(skeleton_global)
+im_after = Image.fromarray(skeleton_show)
+plt.subplot(3,2,5)
+plt.title("Skeleton of global binary image", fontsize= 30)
+plt.imshow(im_after, extent=[0,N,0,M])
+#print skeleton_show
+
+# Use the output of Bernsen thresholding, the corresponding skeleton image is "skeleton_Bernsen"
+bi_img = binary_Bernsen
+M = len(bi_img)
+N = len(bi_img[0])
+k = 0
+#flag = np.array([0]).astype(np.uint32)
+#flag = 0
+iteration_Bernsen = 1
+
+image_padding = np.lib.pad(bi_img,1,'constant', constant_values = 1) # Pad the input matrix with ones (white pixels)
+img_gpu = cl.array.to_device(queue, image_padding)
+y_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
+table0_gpu = cl.array.to_device(queue, table0)
+table1_gpu = cl.array.to_device(queue, table1)
+flag_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
 
 while(True):
     if (k == 0):
@@ -205,22 +251,25 @@ while(True):
     else:
         prg.thinning(queue, bi_img.shape, None, img_gpu.data, y_gpu.data, flag_gpu.data, table1_gpu.data, np.int32(N))
     y = y_gpu.get()
-    if (flag[0] != 0):
-        k = 1-k;
-        flag[0] = 0;
+    flag = flag_gpu.get()
+    if (np.count_nonzero(flag) > 0):
+        k = 1-k
+        flag_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
         img_gpu = cl.array.to_device(queue, np.lib.pad(y,1,'constant', constant_values = 1))
     else:
-        break;
+        break    
+	iteration_Bernsen += 1  
+	
+skeleton_Bernsen =  y
+print 'iterations(Bernsen) =', iteration_Bernsen
 
-skeleton =  y_gpu.get()
-
-skeleton_show = showimage(skeleton)
+# show image
+skeleton_show = showimage(skeleton_Bernsen)
 im_after = Image.fromarray(skeleton_show)
-plt.subplot(3,2,5)
-plt.title("Skeleton", fontsize= 30)
+plt.subplot(3,2,6)
+plt.title("Skeleton of Bernsen binary image", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
-print skeleton_show
-
+#print skeleton_show
 ######################### minutiae extraction #########################
 
 
