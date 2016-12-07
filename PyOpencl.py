@@ -28,6 +28,28 @@ __kernel void show(const int M, const int N, __global int *a, __global int *b){
         else if (a[i*N+j]==1)    b[i*N+j]=255;
 	else b[i*N+j]=a[i*N+j];
 }
+// This kernel is for showing image in RGB
+// Convert endpoints(pixel value of 2) into red
+__kernel void rgbshow(const int N, __global unsigned char *a, __global unsigned char *b) {
+        int i = get_global_id(0);
+        int j = get_global_id(1);
+        
+        if (a[i*N+j]==1) {
+            b[(i*N+j)*3]=255; 
+            b[(i*N+j)*3+1]=255; 
+            b[(i*N+j)*3+2]=255;
+        }
+        if (a[i*N+j]==2) {    
+            b[(i*N+j)*3]=255; 
+            b[(i*N+j)*3+1]=0; 
+            b[(i*N+j)*3+2]=0;
+        }
+        if (a[i*N+j]==3) {
+            b[(i*N+j)*3]=0; 
+            b[(i*N+j)*3+1]=255; 
+            b[(i*N+j)*3+2]=0;
+        }
+}
 //gray to binary kernel using a global threshold
 __kernel void globalthreshold(const int M, const int N, __global int *a, __global int *b){
 	int i = get_global_id(0);
@@ -300,6 +322,7 @@ plt.subplot(5,2,6)
 plt.title("Skeleton of Bernsen binary image", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
 #print skeleton_show
+
 ######################### minutiae extraction #########################
 # use skeleton_global to do minutiae extraction, output file is extraction_global
 image_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=skeleton_global)
@@ -309,17 +332,21 @@ prg = cl.Program(ctx, kernel).build()
 prg.minutiae_extraction(queue, image.shape, None, np.int32(M), np.int32(N), image_buf, extraction_buf)
 cl.enqueue_copy(queue, extraction_global, extraction_buf)
 # show RGB image
-extraction_show = showimage(extraction_global)
-im_after = Image.fromarray(extraction_show)
+img = extraction_global.astype(np.uint8)
+channels = 3 # RGB channels
+result = np.zeros((M, N, channels), dtype = np.uint8) # Creat an empty array for RGB image
+img_gpu = cl.array.to_device(queue, img)
+result_gpu = cl.array.to_device(queue, result)
+# Time stamp
+#gpu_start_time = time()
+prg.rgbshow(queue, img.shape, None, np.int32(N), img_gpu.data, result_gpu.data)
+#print 'time =', time()-gpu_start_time
+result = result_gpu.get()
+#print result
+img_rgb = Image.fromarray(result, 'RGB')
 plt.subplot(5,2,7)
 plt.title("minutiae extraction using global threshold", fontsize= 30)
-plt.imshow(im_after, extent=[0,N,0,M])
-
-
-
-
-
-
+plt.imshow(img_rgb, extent=[0,N,0,M])
 
 
 
