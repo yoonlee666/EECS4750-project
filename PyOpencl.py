@@ -1,4 +1,4 @@
-##############################################
+#############################################
 ########### Fingerprint Recognition ###########
 ###############################################
 from PIL import Image
@@ -25,7 +25,8 @@ __kernel void show(const int M, const int N, __global int *a, __global int *b){
         int i = get_global_id(0);
         int j = get_global_id(1);
         if (a[i*N+j]==0)      b[i*N+j]=0;
-        else    b[i*N+j]=255;
+        else if (a[i*N+j]==1)    b[i*N+j]=255;
+	else b[i*N+j]=a[i*N+j];
 }
 //gray to binary kernel using a global threshold
 __kernel void globalthreshold(const int M, const int N, __global int *a, __global int *b){
@@ -96,17 +97,50 @@ __kernel void thinning(__global unsigned int *img, __global unsigned int *y, __g
     else temp = 1;
     y[i*C+j] = temp;    
 }
+//minutiae extraction using crossing number
+__kernel void minutiae_extraction(const int M, const int N, __global unsigned int *img, __global unsigned int *b) {
+	int i = get_global_id(0);
+        int j = get_global_id(1);
+	b[i*N+j]=0;
+        __local int bins[9];
+	if(img[i*N+j]==0){
+		if ((i>0)&&(i<1133)&&(j>0)&&(j<784)){
+ 	      		bins[0]=img[i*N+j+1];
+			bins[1]=img[(i-1)*N+j+1];
+			bins[2]=img[(i-1)*N+j];
+			bins[3]=img[(i-1)*N+j-1];
+			bins[4]=img[i*N+j-1];
+			bins[5]=img[(i+1)*N+j-1];
+			bins[6]=img[(i+1)*N+j];
+			bins[7]=img[(i+1)*N+j+1];
+			bins[8]=img[i*N+j+1];
+		}
+		int CN=0;
+		for (int k=0;k<8;k++){
+			CN+=abs(bins[k]-bins[k+1]);
+		}
+		if(CN==2)	b[i*N+j]=2;    //endpoint has value 2
+		if(CN==6)	b[i*N+j]=3;    //burification has value 3
+	}
+	else if(img[i*N+j]==1){
+		b[i*N+j]=1;
+	}
+}
+
+
+
+
 """
 
 ######################### gray image to binary image ########################
 # print original grayscale image
-fig = plt.figure(figsize=(20,30))
+fig = plt.figure(figsize=(30,30))
 im = Image.open('./1133_784.jpg').convert('L') #converts the image to grayscale
 M = 1133
 N = 784
 image = np.array(im).astype(np.int32)
 image_gray = Image.fromarray(image)
-plt.subplot(3,2,1)
+plt.subplot(5,2,1)
 plt.title('gray(original) image', fontsize= 30)
 plt.imshow(image_gray, extent=[0,N,0,M])
 print image
@@ -129,7 +163,7 @@ cl.enqueue_copy(queue, binary_global, binary_buf)
 # show image
 binary_show = showimage(binary_global)
 im_after = Image.fromarray(binary_show)
-plt.subplot(3,2,3)
+plt.subplot(5,2,3)
 plt.title("binary image using global threshold", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
 print binary_show
@@ -143,7 +177,7 @@ cl.enqueue_copy(queue, binary_Bernsen, binary_buf)
 # show image
 binary_show = showimage(binary_Bernsen)
 im_after = Image.fromarray(binary_show)
-plt.subplot(3,2,4)
+plt.subplot(5,2,4)
 plt.title("binary image with Bersen algorithm", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
 print binary_show
@@ -189,8 +223,6 @@ table1 = np.array( [[1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0],
 
 # Use the output of global thresholding, the corresponding skeleton image is "skeleton_global"
 bi_img = binary_global 
-M = len(bi_img)
-N = len(bi_img[0])
 k = 0
 #flag = np.array([0]).astype(np.uint32)
 #flag = 0
@@ -224,15 +256,13 @@ print 'iterations(global) =', iteration_global
 # show image
 skeleton_show = showimage(skeleton_global)
 im_after = Image.fromarray(skeleton_show)
-plt.subplot(3,2,5)
+plt.subplot(5,2,5)
 plt.title("Skeleton of global binary image", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
 #print skeleton_show
 
 # Use the output of Bernsen thresholding, the corresponding skeleton image is "skeleton_Bernsen"
 bi_img = binary_Bernsen
-M = len(bi_img)
-N = len(bi_img[0])
 k = 0
 #flag = np.array([0]).astype(np.uint32)
 #flag = 0
@@ -266,11 +296,24 @@ print 'iterations(Bernsen) =', iteration_Bernsen
 # show image
 skeleton_show = showimage(skeleton_Bernsen)
 im_after = Image.fromarray(skeleton_show)
-plt.subplot(3,2,6)
+plt.subplot(5,2,6)
 plt.title("Skeleton of Bernsen binary image", fontsize= 30)
 plt.imshow(im_after, extent=[0,N,0,M])
 #print skeleton_show
 ######################### minutiae extraction #########################
+# use skeleton_global to do minutiae extraction, output file is extraction_global
+image_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=skeleton_global)
+extraction_global = np.empty_like(skeleton_global).astype(np.int32)
+extraction_buf = cl.Buffer(ctx, mf.WRITE_ONLY, extraction_global.nbytes)
+prg = cl.Program(ctx, kernel).build()
+prg.minutiae_extraction(queue, image.shape, None, np.int32(M), np.int32(N), image_buf, extraction_buf)
+cl.enqueue_copy(queue, extraction_global, extraction_buf)
+# show RGB image
+extraction_show = showimage(extraction_global)
+im_after = Image.fromarray(extraction_show)
+plt.subplot(5,2,7)
+plt.title("minutiae extraction using global threshold", fontsize= 30)
+plt.imshow(im_after, extent=[0,N,0,M])
 
 
 
@@ -286,4 +329,4 @@ plt.imshow(im_after, extent=[0,N,0,M])
 
 ################ show image ###############
 fig.tight_layout()
-plt.savefig('FPRS_pyopencl.jpg', dpi=500)
+plt.savefig('FPRS_pyopencl.jpg', dpi=600)
