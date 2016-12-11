@@ -28,45 +28,36 @@ __kernel void show(const int M, const int N, __global int *a, __global int *b){
         else if (a[i*N+j]==1)    b[i*N+j]=255;
 	else b[i*N+j]=a[i*N+j];
 }
-// This kernel is for showing image in RGB
-// Convert endpoints(pixel value of 2) into red
-__kernel void rgbshow(const int N, __global unsigned char *a, __global unsigned char *b) {
-        int i = get_global_id(0);
-        int j = get_global_id(1);
-        
-        if (a[i*N+j]==1) {
-            b[(i*N+j)*3]=255; 
-            b[(i*N+j)*3+1]=255; 
-            b[(i*N+j)*3+2]=255;
-        }
-        if (a[i*N+j]==2) {    
-            b[(i*N+j)*3]=255; 
-            b[(i*N+j)*3+1]=0; 
-            b[(i*N+j)*3+2]=0;
-        }
-        if (a[i*N+j]==3) {
-            b[(i*N+j)*3]=0; 
-            b[(i*N+j)*3+1]=255; 
-            b[(i*N+j)*3+2]=0;
-        }
-}
+
 //gray to binary kernel using a global threshold
-__kernel void globalthreshold(const int M, const int N, __global int *a, __global int *b){
+__kernel void globalthreshold(const int M, const int N, __global const int *image, __global int *histogram, __global int *binary){
 	int i = get_global_id(0);
 	int j = get_global_id(1);
-	if (a[i*N+j]<=205)	b[i*N+j]=0;
-	else	b[i*N+j]=1;
+	atomic_add(&histogram[image[i*N+j]],1);
+	barrier(CLK_GLOBAL_MEM_FENCE);
+	int globalthreshold = 0;
+	for (int k=0;k<256;k++){
+		if (histogram[k]!=0)	{globalthreshold = (255+k)/2; break;}
+	}
+	if (image[i*N+j]<=globalthreshold)	binary[i*N+j]=0;
+	else	binary[i*N+j]=1;
 }
 
 //gray to binary kernel using adaptive threshold --- Bernsen algorithm
-__kernel void Bernsen(const int M, const int N, __global int *a, __global int *b){
+__kernel void Bernsen(const int M, const int N, __global const int *image, __global int *histogram, __global int *binary){
         int i = get_global_id(0);
         int j = get_global_id(1);
+        atomic_add(&histogram[image[i*N+j]],1);
+        barrier(CLK_GLOBAL_MEM_FENCE);
+        int globalthreshold = 0;
+        for (int k=0;k<256;k++){
+                if (histogram[k]!=0)    {globalthreshold = (255+k)/2; break;}
+        }
 	__local int bins[25];
 	for(int k=i-2;k<=i+2;k++){
 		for(int l=j-2;l<=j+2;l++){
 			if((k<0)||(k>=1133)||(l<0)||(l>=784))	bins[(k-i+2)*5+l-j+2]=0;
-			else bins[(k-i+2)*5+l-j+2]=a[k*N+l];
+			else bins[(k-i+2)*5+l-j+2]=image[k*N+l];
 		}
 	}
 //extract max and min(can do it with reduction)
@@ -76,8 +67,8 @@ __kernel void Bernsen(const int M, const int N, __global int *a, __global int *b
 		if(bins[k]<min)	    min=bins[k];
 		if(bins[k]>max)     max=bins[k];
 	}
-        if (((a[i*N+j]>=(min+max)/2)&&(max-min>70))||((a[i*N+j]>=205)&&(max-min<=70)))      b[i*N+j]=1;
-        else    b[i*N+j]=0;
+        if (((image[i*N+j]>=(min+max)/2)&&(max-min>50))||((image[i*N+j]>=globalthreshold)&&(max-min<=50)))      binary[i*N+j]=1;
+        else    binary[i*N+j]=0;
 }
 
 //Kernel for thinning
@@ -88,7 +79,7 @@ __kernel void thinning(__global unsigned int *img, __global unsigned int *y, __g
     __local int neighbor[8];
     __local unsigned int t[256];
     unsigned int col = C+2;
-    
+
     neighbor[0] = 1-img[i*col+j+1];
     neighbor[1] = 1-img[i*col+j+2];
     neighbor[2] = 1-img[(i+1)*col+j+2];
@@ -97,114 +88,189 @@ __kernel void thinning(__global unsigned int *img, __global unsigned int *y, __g
     neighbor[5] = 1-img[(i+2)*col+j];
     neighbor[6] = 1-img[(i+1)*col+j];
     neighbor[7] = 1-img[i*col+j];
-    
+
     for (int n=0; n<8; n++) {
         if (neighbor[n] <0) neighbor[n] = 0; //Remove this for-loop if the input is a real 1-0 binary image
     }
-    
+
     for (int n=0; n<256; n++) {
         t[n] = table[n];
     }
-    
+
     int low_bit = neighbor[0]+neighbor[1]*2+neighbor[2]*4+neighbor[3]*8;
     int high_bit = neighbor[4]+neighbor[5]*2+neighbor[6]*4+neighbor[7]*8;
-    
+
     int temp = img[(i+1)*col+j+1];
     if (temp == 0) {
         if (t[high_bit*16+low_bit] == 0) {
             temp = 1;
             flag[i*C+j] = 1;
         }
-    }   
+    }
     else temp = 1;
-    y[i*C+j] = temp;    
+    y[i*C+j] = temp;
 }
 //minutiae extraction using crossing number
-__kernel void minutiae_extraction(const int M, const int N, __global unsigned int *img, __global unsigned int *b) {
+__kernel void minutiae_extraction(const int M, const int N, __global const int *image, __global int *minutiae, __global int *number) {
 	int i = get_global_id(0);
         int j = get_global_id(1);
-	b[i*N+j]=0;
         __local int bins[9];
-	if(img[i*N+j]==0){
+	if(image[i*N+j]==0){
 		if ((i>0)&&(i<1133)&&(j>0)&&(j<784)){
- 	      		bins[0]=img[i*N+j+1];
-			bins[1]=img[(i-1)*N+j+1];
-			bins[2]=img[(i-1)*N+j];
-			bins[3]=img[(i-1)*N+j-1];
-			bins[4]=img[i*N+j-1];
-			bins[5]=img[(i+1)*N+j-1];
-			bins[6]=img[(i+1)*N+j];
-			bins[7]=img[(i+1)*N+j+1];
-			bins[8]=img[i*N+j+1];
+ 	      		bins[0]=image[i*N+j+1];
+			bins[1]=image[(i-1)*N+j+1];
+			bins[2]=image[(i-1)*N+j];
+			bins[3]=image[(i-1)*N+j-1];
+			bins[4]=image[i*N+j-1];
+			bins[5]=image[(i+1)*N+j-1];
+			bins[6]=image[(i+1)*N+j];
+			bins[7]=image[(i+1)*N+j+1];
+			bins[8]=image[i*N+j+1];
 		}
 		int CN=0;
 		for (int k=0;k<8;k++){
 			CN+=abs(bins[k]-bins[k+1]);
 		}
-		if(CN==2)	b[i*N+j]=2;    //endpoint has value 2
-		if(CN==6)	b[i*N+j]=3;    //burification has value 3
+		if(CN==2){
+			minutiae[i*N+j]=2;    //endpoint has value 2
+			atomic_add(&number[0],1);
+		}
+		if(CN==6){
+			minutiae[i*N+j]=3;    //burification has value 3
+			atomic_add(&number[0],1);
+		}
 	}
-	else if(img[i*N+j]==1){
-		b[i*N+j]=1;
-	}
+	else	minutiae[i*N+j]=1;
 }
 
+// This kernel is for showing minutiae points in RGB
+__kernel void rgbshow(const int N, __global char *a, __global char *b) {
+        int i = get_global_id(0);
+        int j = get_global_id(1);
 
+        if (a[i*N+j]==1) {
+            b[(i*N+j)*3]=255;
+            b[(i*N+j)*3+1]=255;
+            b[(i*N+j)*3+2]=255;
+        }
+        if (a[i*N+j]==2) {
+            b[(i*N+j)*3]=255;
+            b[(i*N+j)*3+1]=0;
+            b[(i*N+j)*3+2]=0;
+        }
+        if (a[i*N+j]==3) {
+            b[(i*N+j)*3]=0;
+            b[(i*N+j)*3+1]=255;
+            b[(i*N+j)*3+2]=0;
+        }
+}
 
-
+// calculating matching score kernel
+__kernel void matching_score(const int M, const int N, const int core1_y, const int core1_x, const int core2_y, const int core2_x, __global int *image1, __global int *image2, __global unsigned int *score) {
+        int i = get_global_id(0);
+        int j = get_global_id(1);
+	if ((image2[i*N+j]==2)||(image2[i*N+j]==3)){
+		int y = i-core2_y+core1_y;
+		int x = j-core2_x+core1_x;
+		__private int bins[25];
+		for (int k=y-2;k<=y+2;k++){
+			for (int l=x-2;l<=x+2;l++){
+				if((k>=0)&&(k<M)&&(l>=0)&&(l<N)){
+					bins[(k-y+2)*5+l-x+2]=image1[k*N+l];
+				}
+				else{
+					bins[(k-y+2)*5+l-x+2]=0;
+				}
+			}
+		}
+		for (int k=0;k<25;k++){
+			if(bins[k]==image2[i*N+j])	{atomic_add(&score[0],1);break;}
+		}
+	}
+}
 """
+################ time array #################
+naivetime = [0]*10
+improvetime = [0]*10
 
-######################### gray image to binary image ########################
 # print original grayscale image
-fig = plt.figure(figsize=(30,30))
-im = Image.open('./1133_784.jpg').convert('L') #converts the image to grayscale
-M = 1133
-N = 784
-image = np.array(im).astype(np.int32)
-image_gray = Image.fromarray(image)
-plt.subplot(5,2,1)
-plt.title('gray(original) image', fontsize= 30)
-plt.imshow(image_gray, extent=[0,N,0,M])
-print image
+fig = plt.figure(figsize=(25,30))
+
+# image1
+im1 = Image.open('./fingerprint1.jpg').convert('L') #converts the image to grayscale
+image1 = np.array(im1).astype(np.int32)
+M = len(image1)
+N = len(image1[0])
+# image2
+im2 = Image.open('./fingerprint2.jpg').convert('L')
+image2 = np.array(im2).astype(np.int32)
+M = len(image2)
+N = len(image2[0])
+
+# print original image
+# image1
+image1_gray = Image.fromarray(image1)
+plt.subplot(4,4,1)
+plt.title('gray(original) image1', fontsize= 20)
+plt.imshow(image1_gray, extent=[0,N,0,M])
+# image2
+image2_gray = Image.fromarray(image2)
+plt.subplot(4,4,3)
+plt.title('gray(original) image2', fontsize= 20)
+plt.imshow(image2_gray, extent=[0,N,0,M])
+
 # print image function
-def showimage(imagename):
+def showimage(imagename, xth, title):
 	binary_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=imagename)
-	binary_show = np.empty_like(image).astype(np.int32)
+	binary_show = np.empty_like(image1).astype(np.int32)
 	binary_show_buf = cl.Buffer(ctx, mf.WRITE_ONLY, binary_show.nbytes)
-	prg.show(queue, image.shape, None, np.int32(M), np.int32(N), binary_buf, binary_show_buf)
+	prg.show(queue, image1.shape, None, np.int32(M), np.int32(N), binary_buf, binary_show_buf)
 	cl.enqueue_copy(queue, binary_show, binary_show_buf)
-	return binary_show
-
-# do binary using a global threshold, output image is "binary_global"
-image_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=image)
-binary_global = np.empty_like(image).astype(np.int32)
-binary_buf = cl.Buffer(ctx, mf.WRITE_ONLY, binary_global.nbytes)
+	im_after = Image.fromarray(binary_show)
+	plt.subplot(4,4,xth)
+	plt.title(title, fontsize= 20)
+	plt.imshow(im_after, extent=[0,N,0,M])
+# compile kernel
 prg = cl.Program(ctx, kernel).build()
-prg.globalthreshold(queue, image.shape, None, np.int32(M), np.int32(N), image_buf, binary_buf)
-cl.enqueue_copy(queue, binary_global, binary_buf)
-# show image
-binary_show = showimage(binary_global)
-im_after = Image.fromarray(binary_show)
-plt.subplot(5,2,3)
-plt.title("binary image using global threshold", fontsize= 30)
-plt.imshow(im_after, extent=[0,N,0,M])
-print binary_show
 
-# do binary using Bernsen algorithm, output image is "binary_Bernsen"
-image_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=image)
-binary_Bernsen = np.empty_like(image).astype(np.int32)
-binary_buf = cl.Buffer(ctx, mf.WRITE_ONLY, binary_Bernsen.nbytes)
-prg.Bernsen(queue, image.shape, None, np.int32(M), np.int32(N), image_buf, binary_buf)
-cl.enqueue_copy(queue, binary_Bernsen, binary_buf)
+######################### STEP 1: gray image to binary image ########################
+##### do binary using a global threshold, output image is "binary1_global" and "binary2_global"
+# image1: binary1_global
+image1_gpu = cl.array.to_device(queue, image1)
+histogram1 = np.zeros((1,256)).astype(np.int32)
+histogram1_gpu = cl.array.to_device(queue, histogram1)
+binary1_gpu = cl.array.zeros(queue,image1.shape,image1.dtype)
+prg.globalthreshold(queue, image1.shape, None, np.int32(M), np.int32(N), image1_gpu.data, histogram1_gpu.data, binary1_gpu.data)
+binary1_global=binary1_gpu.get()
+# image2: binary2_global
+image2_gpu = cl.array.to_device(queue, image2)
+histogram2 = np.zeros((1,256)).astype(np.int32)
+histogram2_gpu = cl.array.to_device(queue, histogram2)
+binary2_gpu = cl.array.zeros(queue,image2.shape,image2.dtype)
+prg.globalthreshold(queue, image2.shape, None, np.int32(M), np.int32(N), image2_gpu.data, histogram2_gpu.data, binary2_gpu.data)
+binary2_global=binary2_gpu.get()
 # show image
-binary_show = showimage(binary_Bernsen)
-im_after = Image.fromarray(binary_show)
-plt.subplot(5,2,4)
-plt.title("binary image with Bersen algorithm", fontsize= 30)
-plt.imshow(im_after, extent=[0,N,0,M])
-print binary_show
+showimage(binary1_global, 5, "binary image1 using global threshold")
+showimage(binary2_global, 7, "binary image2 using global threshold")
 
-print np.allclose(binary_global,binary_Bernsen)
+##### do binary using Bernsen algorithm, output image is "binary1_Bernsen" and "binary2_Bernsen"
+# image1: binary1_Bernsen
+image1_gpu = cl.array.to_device(queue, image1)
+histogram1 = np.zeros((1,256)).astype(np.int32)
+histogram1_gpu = cl.array.to_device(queue, histogram1)
+binary1_gpu = cl.array.zeros(queue,image1.shape,image1.dtype)
+prg.Bernsen(queue, image1.shape, None, np.int32(M), np.int32(N), image1_gpu.data, histogram1_gpu.data, binary1_gpu.data)
+binary1_Bernsen=binary1_gpu.get()
+# image2: binary2_Bernsen
+image2_gpu = cl.array.to_device(queue, image2)
+histogram2 = np.zeros((1,256)).astype(np.int32)
+histogram2_gpu = cl.array.to_device(queue, histogram2)
+binary2_gpu = cl.array.zeros(queue,image2.shape,image2.dtype)
+prg.Bernsen(queue, image2.shape, None, np.int32(M), np.int32(N), image2_gpu.data, histogram2_gpu.data, binary2_gpu.data)
+binary2_Bernsen=binary2_gpu.get()
+# show image
+showimage(binary1_Bernsen, 6, "binary image1 with Bersen algorithm")
+showimage(binary2_Bernsen, 8, "binary image2 with Bersen algorithm")
 
 ######################### Thinning #########################
 # Table mapping
@@ -243,115 +309,165 @@ table1 = np.array( [[1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0],
                    [0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                    [0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1]], np.uint32)
 
-# Use the output of global thresholding, the corresponding skeleton image is "skeleton_global"
-bi_img = binary_global 
-k = 0
-#flag = np.array([0]).astype(np.uint32)
-#flag = 0
-iteration_global = 1
-
-image_padding = np.lib.pad(bi_img,1,'constant', constant_values = 1) # Pad the input matrix with ones (white pixels)
-img_gpu = cl.array.to_device(queue, image_padding)
-y_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
+# Use the output of global thresholding, the corresponding skeleton image is "skeleton1_global" and "skeleton2_global"
+image1_padding = np.lib.pad(binary1_global,1,'constant', constant_values = 1) # Pad the input matrix with ones (white pixels)
+image2_padding = np.lib.pad(binary2_global,1,'constant', constant_values = 1)
+img1_gpu = cl.array.to_device(queue, image1_padding)
+img2_gpu = cl.array.to_device(queue, image2_padding)
+y1_gpu = cl.array.zeros(queue,binary1_global.shape,binary1_global.dtype)
+y2_gpu = cl.array.zeros(queue,binary2_global.shape,binary2_global.dtype)
 table0_gpu = cl.array.to_device(queue, table0)
 table1_gpu = cl.array.to_device(queue, table1)
-flag_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
-
+flag1_gpu = cl.array.zeros(queue,binary1_global.shape,binary1_global.dtype)
+flag2_gpu = cl.array.zeros(queue,binary2_global.shape,binary2_global.dtype)
+k = 0
+iteration_global = 1
 while(True):
 	if (k == 0):
-		prg.thinning(queue, bi_img.shape, None, img_gpu.data, y_gpu.data, flag_gpu.data, table0_gpu.data, np.int32(N))
+		prg.thinning(queue, binary1_global.shape, None, img1_gpu.data, y1_gpu.data, flag1_gpu.data, table0_gpu.data, np.int32(N))
 	else:
-		prg.thinning(queue, bi_img.shape, None, img_gpu.data, y_gpu.data, flag_gpu.data, table1_gpu.data, np.int32(N))
-	y = y_gpu.get()
-	flag = flag_gpu.get()
-	if (np.count_nonzero(flag) > 0):
+		prg.thinning(queue, binary1_global.shape, None, img1_gpu.data, y1_gpu.data, flag1_gpu.data, table1_gpu.data, np.int32(N))
+	y1 = y1_gpu.get()
+	flag1 = flag1_gpu.get()
+	if (np.count_nonzero(flag1) > 0):
 		k = 1-k
-		flag_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
-		img_gpu = cl.array.to_device(queue, np.lib.pad(y,1,'constant', constant_values = 1))
+		flag1_gpu = cl.array.zeros(queue,binary1_global.shape,binary1_global.dtype)
+		img1_gpu = cl.array.to_device(queue, np.lib.pad(y1,1,'constant', constant_values = 1))
 	else:
 		break
 	iteration_global += 1
 
-skeleton_global =  y
+skeleton1_global =  y1
 print 'iterations(global) =', iteration_global
+k = 0
+iteration_global = 1
+while(True):
+        if (k == 0):
+                prg.thinning(queue, binary2_global.shape, None, img2_gpu.data, y2_gpu.data, flag2_gpu.data, table0_gpu.data, np.int32(N))
+        else:
+                prg.thinning(queue, binary2_global.shape, None, img2_gpu.data, y2_gpu.data, flag2_gpu.data, table1_gpu.data, np.int32(N))
+        y2 = y2_gpu.get()
+        flag2 = flag2_gpu.get()
+        if (np.count_nonzero(flag2) > 0):
+                k = 1-k
+                flag2_gpu = cl.array.zeros(queue,binary2_global.shape,binary2_global.dtype)
+                img2_gpu = cl.array.to_device(queue, np.lib.pad(y2,1,'constant', constant_values = 1))
+        else:
+                break
+        iteration_global += 1
+
+skeleton2_global =  y2
 
 # show image
-skeleton_show = showimage(skeleton_global)
-im_after = Image.fromarray(skeleton_show)
-plt.subplot(5,2,5)
-plt.title("Skeleton of global binary image", fontsize= 30)
-plt.imshow(im_after, extent=[0,N,0,M])
-#print skeleton_show
+showimage(skeleton1_global, 9, "Skeleton of global binary image1")
+showimage(skeleton2_global, 11, "Skeleton of global binary image2")
 
-# Use the output of Bernsen thresholding, the corresponding skeleton image is "skeleton_Bernsen"
-bi_img = binary_Bernsen
-k = 0
-#flag = np.array([0]).astype(np.uint32)
-#flag = 0
-iteration_Bernsen = 1
-
-image_padding = np.lib.pad(bi_img,1,'constant', constant_values = 1) # Pad the input matrix with ones (white pixels)
-img_gpu = cl.array.to_device(queue, image_padding)
-y_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
+# Use the output of Bernsen thresholding, the corresponding skeleton image is "skeleton1_Bernsen" and "skeleton2_Bernsen"
+image1_padding = np.lib.pad(binary1_Bernsen,1,'constant', constant_values = 1) # Pad the input matrix with ones (white pixels)
+image2_padding = np.lib.pad(binary2_Bernsen,1,'constant', constant_values = 1)
+img1_gpu = cl.array.to_device(queue, image1_padding)
+img2_gpu = cl.array.to_device(queue, image2_padding)
+y1_gpu = cl.array.zeros(queue,binary1_Bernsen.shape,binary1_Bernsen.dtype)
+y2_gpu = cl.array.zeros(queue,binary2_Bernsen.shape,binary2_Bernsen.dtype)
 table0_gpu = cl.array.to_device(queue, table0)
 table1_gpu = cl.array.to_device(queue, table1)
-flag_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
-
+flag1_gpu = cl.array.zeros(queue,binary1_Bernsen.shape,binary1_Bernsen.dtype)
+flag2_gpu = cl.array.zeros(queue,binary2_Bernsen.shape,binary2_Bernsen.dtype)
+k = 0
+iteration_Bernsen = 1
 while(True):
     if (k == 0):
-        prg.thinning(queue, bi_img.shape, None, img_gpu.data, y_gpu.data, flag_gpu.data, table0_gpu.data, np.int32(N))
+        prg.thinning(queue, binary1_Bernsen.shape, None, img1_gpu.data, y1_gpu.data, flag1_gpu.data, table0_gpu.data, np.int32(N))
     else:
-        prg.thinning(queue, bi_img.shape, None, img_gpu.data, y_gpu.data, flag_gpu.data, table1_gpu.data, np.int32(N))
-    y = y_gpu.get()
-    flag = flag_gpu.get()
-    if (np.count_nonzero(flag) > 0):
+        prg.thinning(queue, binary1_Bernsen.shape, None, img1_gpu.data, y1_gpu.data, flag1_gpu.data, table1_gpu.data, np.int32(N))
+    y1 = y1_gpu.get()
+    flag1 = flag1_gpu.get()
+    if (np.count_nonzero(flag1) > 0):
         k = 1-k
-        flag_gpu = cl.array.zeros(queue,bi_img.shape,bi_img.dtype)
-        img_gpu = cl.array.to_device(queue, np.lib.pad(y,1,'constant', constant_values = 1))
+        flag1_gpu = cl.array.zeros(queue,binary1_Bernsen.shape,binary1_Bernsen.dtype)
+        img1_gpu = cl.array.to_device(queue, np.lib.pad(y1,1,'constant', constant_values = 1))
     else:
-        break    
-	iteration_Bernsen += 1  
-	
-skeleton_Bernsen =  y
+        break
+	iteration_Bernsen += 1
+
+skeleton1_Bernsen =  y1
+print 'iterations(Bernsen) =', iteration_Bernsen
+
+k = 0
+iteration_Bernsen = 1
+while(True):
+    if (k == 0):
+        prg.thinning(queue, binary2_Bernsen.shape, None, img2_gpu.data, y2_gpu.data, flag2_gpu.data, table0_gpu.data, np.int32(N))
+    else:
+        prg.thinning(queue, binary2_Bernsen.shape, None, img2_gpu.data, y2_gpu.data, flag2_gpu.data, table1_gpu.data, np.int32(N))
+    y2 = y2_gpu.get()
+    flag2 = flag2_gpu.get()
+    if (np.count_nonzero(flag2) > 0):
+        k = 1-k
+        flag2_gpu = cl.array.zeros(queue,binary2_Bernsen.shape,binary2_Bernsen.dtype)
+        img2_gpu = cl.array.to_device(queue, np.lib.pad(y2,1,'constant', constant_values = 1))
+    else:
+        break
+        iteration_Bernsen += 1
+
+skeleton2_Bernsen =  y2
 print 'iterations(Bernsen) =', iteration_Bernsen
 
 # show image
-skeleton_show = showimage(skeleton_Bernsen)
-im_after = Image.fromarray(skeleton_show)
-plt.subplot(5,2,6)
-plt.title("Skeleton of Bernsen binary image", fontsize= 30)
-plt.imshow(im_after, extent=[0,N,0,M])
-#print skeleton_show
+showimage(skeleton1_Bernsen, 10, "Skeleton of Bernsen binary image1")
+showimage(skeleton2_Bernsen, 12, "Skeleton of Bernsen binary image2")
 
 ######################### minutiae extraction #########################
-# use skeleton_global to do minutiae extraction, output file is extraction_global
-image_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=skeleton_global)
-extraction_global = np.empty_like(skeleton_global).astype(np.int32)
-extraction_buf = cl.Buffer(ctx, mf.WRITE_ONLY, extraction_global.nbytes)
-prg = cl.Program(ctx, kernel).build()
-prg.minutiae_extraction(queue, image.shape, None, np.int32(M), np.int32(N), image_buf, extraction_buf)
-cl.enqueue_copy(queue, extraction_global, extraction_buf)
+# output file is extraction1_global and extraction2_global
+image1_gpu = cl.array.to_device(queue, skeleton1_global)
+extraction1_gpu = cl.array.zeros(queue,image1.shape,image1.dtype)
+number1_gpu = cl.array.zeros(queue,(1,1),np.int32)
+prg.minutiae_extraction(queue, image1.shape, None, np.int32(M), np.int32(N), image1_gpu.data, extraction1_gpu.data, number1_gpu.data)
+extraction1_global=extraction1_gpu.get()
+number1 = number1_gpu.get()
+
+image2_gpu = cl.array.to_device(queue, skeleton2_global)
+extraction2_gpu = cl.array.zeros(queue,image2.shape,image2.dtype)
+number2_gpu = cl.array.zeros(queue,(1,1),np.int32)
+prg.minutiae_extraction(queue, image2.shape, None, np.int32(M), np.int32(N), image2_gpu.data, extraction2_gpu.data, number2_gpu.data)
+extraction2_global=extraction2_gpu.get()
+number2 = number2_gpu.get()
+
 # show RGB image
-img = extraction_global.astype(np.uint8)
+img = extraction1_global.astype(np.uint8)
 channels = 3 # RGB channels
 result = np.zeros((M, N, channels), dtype = np.uint8) # Creat an empty array for RGB image
 img_gpu = cl.array.to_device(queue, img)
 result_gpu = cl.array.to_device(queue, result)
-# Time stamp
-#gpu_start_time = time()
 prg.rgbshow(queue, img.shape, None, np.int32(N), img_gpu.data, result_gpu.data)
-#print 'time =', time()-gpu_start_time
 result = result_gpu.get()
-#print result
 img_rgb = Image.fromarray(result, 'RGB')
-plt.subplot(5,2,7)
-plt.title("minutiae extraction using global threshold", fontsize= 30)
+plt.subplot(4,4,13)
+plt.title("minutiae extraction of image1 using global threshold", fontsize= 20)
+plt.imshow(img_rgb, extent=[0,N,0,M])
+img = extraction2_global.astype(np.uint8)
+result = np.zeros((M, N, 3), dtype = np.uint8) # Creat an empty array for RGB image
+img_gpu = cl.array.to_device(queue, img)
+result_gpu = cl.array.to_device(queue, result)
+prg.rgbshow(queue, img.shape, None, np.int32(N), img_gpu.data, result_gpu.data)
+result = result_gpu.get()
+img_rgb = Image.fromarray(result, 'RGB')
+plt.subplot(4,4,15)
+plt.title("minutiae extraction of image2 using global threshold", fontsize= 20)
 plt.imshow(img_rgb, extent=[0,N,0,M])
 
-
-
-
-
+################### calculate matching score #####################
+image1_gpu = cl.array.to_device(queue, extraction1_global)
+image2_gpu = cl.array.to_device(queue, extraction2_global)
+score_gpu = cl.array.zeros(queue,(1,1),np.int32)
+core1_y=250
+core1_x=170
+core2_y=250
+core2_x=170
+prg.matching_score(queue, image1.shape, None, np.int32(M), np.int32(N), np.int32(core1_y), np.int32(core1_x), np.int32(core2_y), np.int32(core2_x),image1_gpu.data, image2_gpu.data, score_gpu.data)
+score = score_gpu.get()
+print "matching score: "
+print float(score[0][0])/float(number2[0][0])
 
 
 ################ show image ###############
