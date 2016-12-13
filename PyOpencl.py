@@ -117,7 +117,7 @@ __kernel void minutiae_extraction(const int M, const int N, __global const int *
         __local int bins[9];
 	if(image[i*N+j]==0){
 		if ((i>0)&&(i<1133)&&(j>0)&&(j<784)){
- 	      		bins[0]=image[i*N+j+1];
+ 	      	bins[0]=image[i*N+j+1];
 			bins[1]=image[(i-1)*N+j+1];
 			bins[2]=image[(i-1)*N+j];
 			bins[3]=image[(i-1)*N+j-1];
@@ -190,9 +190,10 @@ __kernel void matching_score(const int M, const int N, const int core1_y, const 
 }
 """
 ################ time array #################
-naivetime = [0]*10
-improvetime = [0]*10
-
+global_naive = [0]*10
+global_improve = [0]*10
+local_naive = [0]*10
+local_improve = [0]*10
 # print original grayscale image
 fig = plt.figure(figsize=(25,30))
 
@@ -236,11 +237,16 @@ prg = cl.Program(ctx, kernel).build()
 ######################### STEP 1: gray image to binary image ########################
 ##### do binary using a global threshold, output image is "binary1_global" and "binary2_global"
 # image1: binary1_global
-image1_gpu = cl.array.to_device(queue, image1)
-histogram1 = np.zeros((1,256)).astype(np.int32)
-histogram1_gpu = cl.array.to_device(queue, histogram1)
-binary1_gpu = cl.array.zeros(queue,image1.shape,image1.dtype)
-prg.globalthreshold(queue, image1.shape, None, np.int32(M), np.int32(N), image1_gpu.data, histogram1_gpu.data, binary1_gpu.data)
+times=[]
+for i in range(10):
+	image1_gpu = cl.array.to_device(queue, image1)
+	histogram1 = np.zeros((1,256)).astype(np.int32)
+	histogram1_gpu = cl.array.to_device(queue, histogram1)
+	binary1_gpu = cl.array.zeros(queue,image1.shape,image1.dtype)
+	start=time.time()
+	prg.globalthreshold(queue, image1.shape, None, np.int32(M), np.int32(N), image1_gpu.data, histogram1_gpu.data, binary1_gpu.data)
+	times.append(time.time()-start)
+global_naive[0]=np.average(times)
 binary1_global=binary1_gpu.get()
 # image2: binary2_global
 image2_gpu = cl.array.to_device(queue, image2)
@@ -255,11 +261,16 @@ showimage(binary2_global, 7, "binary image2 using global threshold")
 
 ##### do binary using Bernsen algorithm, output image is "binary1_Bernsen" and "binary2_Bernsen"
 # image1: binary1_Bernsen
-image1_gpu = cl.array.to_device(queue, image1)
-histogram1 = np.zeros((1,256)).astype(np.int32)
-histogram1_gpu = cl.array.to_device(queue, histogram1)
-binary1_gpu = cl.array.zeros(queue,image1.shape,image1.dtype)
-prg.Bernsen(queue, image1.shape, None, np.int32(M), np.int32(N), image1_gpu.data, histogram1_gpu.data, binary1_gpu.data)
+times=[]
+for i in range(10):
+	image1_gpu = cl.array.to_device(queue, image1)
+	histogram1 = np.zeros((1,256)).astype(np.int32)
+	histogram1_gpu = cl.array.to_device(queue, histogram1)
+	binary1_gpu = cl.array.zeros(queue,image1.shape,image1.dtype)
+	start=time.time()
+	prg.Bernsen(queue, image1.shape, None, np.int32(M), np.int32(N), image1_gpu.data, histogram1_gpu.data, binary1_gpu.data)
+	times.append(time.time()-start)
+local_naive[0]=np.average(times)
 binary1_Bernsen=binary1_gpu.get()
 # image2: binary2_Bernsen
 image2_gpu = cl.array.to_device(queue, image2)
