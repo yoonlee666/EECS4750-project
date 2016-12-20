@@ -74,53 +74,60 @@ __kernel void Bernsen(const int M, const int N, __global const int *image, __glo
 //Kernel for thinning
 __kernel void thinning(__global int *img, __global int *y, __global int *flag,
                    __global int *table, const int row, const int col) {
-    unsigned int i = get_global_id(0);
-    unsigned int j = get_global_id(1);
-    __local int neighbor[8];
+    unsigned int i = get_group_id(0)*get_local_size(0)+get_local_id(0);
+    unsigned int j = get_group_id(1)*get_local_size(1)+get_local_id(1);
+    __private int neighbor[8];
     __local int t[256];
-	
-	for (int k=0; k<8; k++)
-	{
-		neighbor[k] = 0;
-	}
-    if (i>0) 
-    	neighbor[0] = 1-img[(i-1)*col+j];
-    if (i>0 && j<col-1) 
-    	neighbor[1] = 1-img[(i-1)*col+j+1];
-    if (j<col-1) 
-    	neighbor[2] = 1-img[i*col+j+1];
-    if (i<row-1 && j<col-1) 
-    	neighbor[3] = 1-img[(i+1)*col+j+1];
-    if (i<row-1) 
-    	neighbor[4] = 1-img[(i+1)*col+j];
-    if (i<row-1 && j>0) 
-    	neighbor[5] = 1-img[(i+1)*col+j-1];
-    if (j>0) 
-    	neighbor[6] = 1-img[i*col+j-1];
-    if (i>0 && j>0) 
-    	neighbor[7] = 1-img[(i-1)*col+j-1];
-
-    for (int n=0; n<8; n++) {
-        if (neighbor[n] <0) neighbor[n] = 0; //Remove this for-loop if the input is a real 1-0 binary image
-    }
-
-    for (int n=0; n<256; n++) {
+    
+    int n = get_local_size(1)*get_local_id(0)+get_local_id(1);
+    int stride = get_local_size(1)*get_local_size(0);
+    while (n<256) {
         t[n] = table[n];
+        n += stride;
     }
-
-    int low_bit = neighbor[0]+neighbor[1]*2+neighbor[2]*4+neighbor[3]*8;
-    int high_bit = neighbor[4]+neighbor[5]*2+neighbor[6]*4+neighbor[7]*8;
-
-    int temp = img[i*col+j];
-    flag[i*col+j] = 0;
-    if (temp == 0) {
-        if (t[high_bit*16+low_bit] == 0) {
-            temp = 1;
-            flag[i*col+j] = 1;
+    barrier(CLK_LOCAL_MEM_FENCE);
+        
+    if (i<row && j<col)
+    {
+        for (int k=0; k<8; k++)
+        {
+            neighbor[k] = 0;
         }
+        if (i>0) 
+            neighbor[0] = 1-img[(i-1)*col+j];
+        if (i>0 && j<col-1) 
+            neighbor[1] = 1-img[(i-1)*col+j+1];
+        if (j<col-1) 
+            neighbor[2] = 1-img[i*col+j+1];
+        if (i<row-1 && j<col-1) 
+            neighbor[3] = 1-img[(i+1)*col+j+1];
+        if (i<row-1) 
+            neighbor[4] = 1-img[(i+1)*col+j];
+        if (i<row-1 && j>0) 
+            neighbor[5] = 1-img[(i+1)*col+j-1];
+        if (j>0) 
+            neighbor[6] = 1-img[i*col+j-1];
+        if (i>0 && j>0) 
+            neighbor[7] = 1-img[(i-1)*col+j-1];
+
+        for (n=0; n<8; n++) {
+            if (neighbor[n] <0) neighbor[n] = 0; //Remove this for-loop if the input is a real 1-0 binary image
+        }    
+
+        int low_bit = neighbor[0]+neighbor[1]*2+neighbor[2]*4+neighbor[3]*8;
+        int high_bit = neighbor[4]+neighbor[5]*2+neighbor[6]*4+neighbor[7]*8;
+
+        int temp = img[i*col+j];
+        flag[i*col+j] = 0;
+        if (temp == 0) {
+            if (t[high_bit*16+low_bit] == 0) {
+                temp = 1;
+                flag[i*col+j] = 1;
+            }
+        }
+        else temp = 1;
+        y[i*col+j] = temp;
     }
-    else temp = 1;
-    y[i*col+j] = temp;
 }
 //minutiae extraction using crossing number
 __kernel void minutiae_extraction(const int M, const int N, __global const int *image, __global int *minutiae, __global int *number) {
@@ -330,17 +337,19 @@ table0_gpu = cl.array.to_device(queue, table0)
 table1_gpu = cl.array.to_device(queue, table1)
 flag1_gpu = cl.array.zeros(queue,binary1_global.shape,binary1_global.dtype)
 flag2_gpu = cl.array.zeros(queue,binary2_global.shape,binary2_global.dtype)
+L = 8
+M1 = ((M-1)/L+1)*L
+N1 = ((N-1)/L+1)*L
 k = 0
 iteration_global = 1
 while(True):
 	if (k == 0):
-		prg.thinning(queue, binary1_global.shape, None, img1_gpu.data, y1_gpu.data, flag1_gpu.data, table0_gpu.data, np.int32(M), np.int32(N))
+		prg.thinning(queue, (M1,N1), (L,L), img1_gpu.data, y1_gpu.data, flag1_gpu.data, table0_gpu.data, np.int32(M), np.int32(N))
 	else:
-		prg.thinning(queue, binary1_global.shape, None, img1_gpu.data, y1_gpu.data, flag1_gpu.data, table1_gpu.data, np.int32(M), np.int32(N))
+		prg.thinning(queue, (M1,N1), (L,L), img1_gpu.data, y1_gpu.data, flag1_gpu.data, table1_gpu.data, np.int32(M), np.int32(N))
 	flag1 = flag1_gpu.get()
 	if (np.count_nonzero(flag1) > 0):
 		k = 1-k
-		flag1_gpu = cl.array.zeros(queue,binary1_global.shape,binary1_global.dtype)
 		img1_gpu = y1_gpu
 	else:
 		break
@@ -352,13 +361,12 @@ k = 0
 iteration_global = 1
 while(True):
 	if (k == 0):
-		prg.thinning(queue, binary2_global.shape, None, img2_gpu.data, y2_gpu.data, flag2_gpu.data, table0_gpu.data, np.int32(M), np.int32(N))
+		prg.thinning(queue, (M1,N1), (L,L), img2_gpu.data, y2_gpu.data, flag2_gpu.data, table0_gpu.data, np.int32(M), np.int32(N))
 	else:
-		prg.thinning(queue, binary2_global.shape, None, img2_gpu.data, y2_gpu.data, flag2_gpu.data, table1_gpu.data, np.int32(M), np.int32(N))	
+		prg.thinning(queue, (M1,N1), (L,L), img2_gpu.data, y2_gpu.data, flag2_gpu.data, table1_gpu.data, np.int32(M), np.int32(N))	
 	flag2 = flag2_gpu.get()
 	if (np.count_nonzero(flag2) > 0):
 		k = 1-k
-		flag2_gpu = cl.array.zeros(queue,binary2_global.shape,binary2_global.dtype)
 		img2_gpu = y2_gpu
 	else:
 		break
@@ -384,9 +392,9 @@ k = 0
 iteration_Bernsen = 1
 while(True):
 	if (k == 0):
-		prg.thinning(queue, binary1_Bernsen.shape, None, img1_gpu.data, y1_gpu.data, flag1_gpu.data, table0_gpu.data, np.int32(M), np.int32(N))
+		prg.thinning(queue, (M1,N1), (L,L), img1_gpu.data, y1_gpu.data, flag1_gpu.data, table0_gpu.data, np.int32(M), np.int32(N))
 	else:
-		prg.thinning(queue, binary1_Bernsen.shape, None, img1_gpu.data, y1_gpu.data, flag1_gpu.data, table1_gpu.data, np.int32(M), np.int32(N))	
+		prg.thinning(queue, (M1,N1), (L,L), img1_gpu.data, y1_gpu.data, flag1_gpu.data, table1_gpu.data, np.int32(M), np.int32(N))	
 	flag1 = flag1_gpu.get()
 	if (np.count_nonzero(flag1) > 0):
 		k = 1-k
@@ -403,9 +411,9 @@ k = 0
 iteration_Bernsen = 1
 while(True):
 	if (k == 0):
-		prg.thinning(queue, binary2_Bernsen.shape, None, img2_gpu.data, y2_gpu.data, flag2_gpu.data, table0_gpu.data, np.int32(M), np.int32(N))
+		prg.thinning(queue, (M1,N1), (L,L), img2_gpu.data, y2_gpu.data, flag2_gpu.data, table0_gpu.data, np.int32(M), np.int32(N))
 	else:
-		prg.thinning(queue, binary2_Bernsen.shape, None, img2_gpu.data, y2_gpu.data, flag2_gpu.data, table1_gpu.data, np.int32(M), np.int32(N))	
+		prg.thinning(queue, (M1,N1), (L,L), img2_gpu.data, y2_gpu.data, flag2_gpu.data, table1_gpu.data, np.int32(M), np.int32(N))	
 	flag2 = flag2_gpu.get()
 	if (np.count_nonzero(flag2) > 0):
 		k = 1-k
